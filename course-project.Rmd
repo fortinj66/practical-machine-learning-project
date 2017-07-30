@@ -1,0 +1,108 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "John Fortin"
+date: "7/29/2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(caret)
+library(plyr)
+library(readr)
+library(parallel)
+library(doParallel)
+```
+
+<h2>Introduction</h2>
+<p>The purpose of the project was to take a dataset which took measurements of several people doing one type of dumbbell exercise and determine whether the exercise was done correctly.  The measurements were taken using various electronic devices and the participants were instructed to perform the exercise in the correct manner as well as several incorrect manners for a total of five outcomes.  
+
+<p>Details for this experiment can be seen at http://groupware.les.inf.puc-rio.br/har
+
+<h2>Method</h2>
+<p>As a normal part of data analysis we will first load and cleanup the data.  In this case there are many columns which have missing data points.  These will be removed.
+
+```{r, include=TRUE}
+#Load training and testing datasets
+URL_TRAIN="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+URL_TEST="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+#Download the datasets if we haven't already downloaded them
+if (!file.exists("pml-training.csv"))
+    download.file(URL_TRAIN,"pml-training.csv")
+if (!file.exists("pml-testing.csv"))
+    download.file(URL_TEST,"pml-testing.csv")
+
+#Import the datasets
+training_ds = read_csv("pml-training.csv")
+testing_ds  = read_csv("pml-testing.csv")
+```
+
+```{r}
+#Remove the first five columns as they only provide identification traits such as timestamps and subject names.
+training_clean = training_ds[, -(1:5)]
+
+#Remove columns that have any NA entries.  We only want columbs with clean data
+empty_columns  = colSums(is.na(training_clean))
+training_clean = training_clean[, empty_columns == FALSE]
+
+#Remove any columns that have no significant or zero variance (NZV)
+nzv_columns    = nzv(training_clean, saveMetrics = TRUE)[,4]
+training_clean = training_clean[, nzv_columns == FALSE]
+
+#make the same changes to testing data
+testing_clean = testing_ds[, -(1:5)]
+testing_clean = testing_clean[, empty_columns == FALSE]
+testing_clean = testing_clean[, nzv_columns == FALSE]
+```
+<p>Now we will partition the data from the training dataset into a new training dataset and a cross-validation dataset.  This will allow us to determine how effective the training was.  We will use 70% for training partitions size.
+```{r}
+partition = createDataPartition(training_clean$classe, 
+                                p = 0.7,  
+                                list = FALSE)
+training_data = training_clean[partition,]
+validation_data = training_clean[-partition,]
+```
+
+<h2>Create Model</h2>
+<p>Since we are looking to categorize data we will start with a Random Forest model. In order to save processing time on reruns we will save the model to disk after the first run and load from disk if the file exists.  Removing the file will force the model to be regenerated.
+
+<p>Note: as recommended in the forums I will be using parallel processing to speed up the model generation.  See https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md for details.
+
+```{r}
+saved_model = "model-rf.RData"
+if (file.exists(saved_model)) {
+    load(file = saved_model, verbose = FALSE)
+}else{
+    cluster <- makeCluster(detectCores() - 1) 
+    registerDoParallel(cluster)
+    fitControl <- trainControl(method = "cv",
+                               number = 5,
+                               allowParallel = TRUE)
+    model_rf = train(classe ~ ., 
+                  data=training_data, 
+                  method="rf", 
+                  trControl = fitControl)
+    stopCluster(cluster)
+    registerDoSEQ()
+    save(model_rf, file = saved_model)
+}
+
+```
+<h2>Cross-Validation</h2>
+<p>Now that we have created the model we need to validate the model with the cross-validation dataset we created earlier.
+
+```{r}
+pred = predict(model_rf, validation_data)
+confusionMatrix(pred, validation_data$classe)
+```
+<p>As we can see in the confusion matrix, the accuracy rate for the model is 0.9995 with a P-value on the order of 10^-16.  The expected out of sample error should be less than 1 out of 1000.
+
+<p>With an accuracy rate this good we can apply this model to the real testing dataset.  The result will be fed into the Course Project Prediction Quiz for evaluation.
+```{r}
+pred = predict(model_rf, testing_clean)
+pred
+```
+<h2>Results</h2>
+<p>Based on the model generated and the predicted results from from the test dataset, a 100% accuracy rate was achieved.
